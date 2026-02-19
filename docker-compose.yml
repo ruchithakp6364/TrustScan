@@ -1,0 +1,31 @@
+version: '3.8'
+
+services:
+  mongodb:
+    image: mongo:6
+    container_name: trustscan-mongodb
+    restart: always
+    ports:
+      - '27017:27017'
+    volumes:
+      - mongodb_data:/data/db
+    environment:
+      - MONGO_INITDB_DATABASE=trustscan_db
+
+  app:
+    build: .
+    container_name: trustscan-app
+    restart: always
+    ports:
+      - '3000:3000'
+    depends_on:
+      - mongodb
+    environment:
+      - MONGO_URL=mongodb://mongodb:27017
+      - DB_NAME=trustscan_db
+      - NEXT_PUBLIC_BASE_URL=http://localhost:3000
+      - JWT_SECRET=change-this-in-production
+      - CORS_ORIGINS=*
+
+volumes:
+  mongodb_data:
