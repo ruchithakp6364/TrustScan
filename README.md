@@ -77,8 +77,17 @@ yarn install
 Copy `.env` and update with your values:
 
 ```env
+# MongoDB Connection
 MONGO_URL=mongodb://localhost:27017
 DB_NAME=trustscan_db
+
+# Prisma Database URL (MongoDB)
+DATABASE_URL=mongodb://localhost:27017/trustscan_db?replicaSet=rs0
+
+# Redis Connection
+REDIS_URL=redis://localhost:6379
+
+# Application
 NEXT_PUBLIC_BASE_URL=http://localhost:3000
 CORS_ORIGINS=*
 
