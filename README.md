@@ -37,14 +37,16 @@ A comprehensive production-ready web application for detecting fraudulent websit
 
 ### Backend
 - **Next.js API Routes** - Serverless API functions
+- **Prisma ORM 6.2.0** - Modern TypeScript ORM
 - **MongoDB 6.6.0** - NoSQL database
+- **Redis 7.0** - High-performance caching
 - **JWT** - Authentication tokens
 - **Bcrypt** - Password hashing
 - **Zod** - Input validation
 
 ### Security
 - SSL validation using Node.js HTTPS module
-- Rate limiting middleware
+- Redis-based rate limiting
 - Input sanitization and validation
 - JWT token-based authentication
 - Password hashing with bcrypt
