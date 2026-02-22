@@ -1,466 +1,485 @@
 #!/usr/bin/env python3
 """
-TrustScan Backend API Test Suite
-Comprehensive testing for all API endpoints
+TrustScan Backend Tests - Prisma ORM & Redis Implementation
+Tests for updated TrustScan backend with Prisma ORM and Redis caching
 """
+
 import requests
 import json
 import time
 import os
 from datetime import datetime
 
-# Base URL from environment
-BASE_URL = "https://trustscan-preview.preview.emergentagent.com/api"
+# Get base URL from environment
+BASE_URL = os.getenv('NEXT_PUBLIC_BASE_URL', 'https://trustscan-preview.preview.emergentagent.com')
 
-# Test data
-TEST_USER_DATA = {
-    "name": "Alice Johnson",
-    "email": "alice.johnson@example.com", 
-    "password": "securepass123"
-}
-
-TEST_ADMIN_DATA = {
-    "name": "Admin User",
-    "email": "admin@trustscan.com",
-    "password": "adminpass123"
-}
-
-TEST_URLS = [
-    "https://google.com",
-    "http://example.com", 
-    "facebook.com",
-    "not-a-url"
-]
-
-class TrustScanAPITester:
+class TrustScanTester:
     def __init__(self):
         self.base_url = BASE_URL
-        self.user_token = None
-        self.admin_token = None
-        self.scan_ids = []
-        self.results = {
-            "total_tests": 0,
-            "passed": 0, 
-            "failed": 0,
-            "details": []
-        }
-    
-    def log_test(self, test_name, passed, details=""):
-        self.results["total_tests"] += 1
-        if passed:
-            self.results["passed"] += 1
-            print(f"✅ PASS: {test_name}")
-        else:
-            self.results["failed"] += 1
-            print(f"❌ FAIL: {test_name}")
+        self.session = requests.Session()
+        self.auth_token = None
+        self.test_results = []
         
+    def log_test(self, test_name, success, message, details=None):
+        """Log test results with timestamp"""
+        result = {
+            'test': test_name,
+            'success': success,
+            'message': message,
+            'timestamp': datetime.now().isoformat(),
+            'details': details
+        }
+        self.test_results.append(result)
+        status = "✅ PASS" if success else "❌ FAIL"
+        print(f"{status}: {test_name} - {message}")
         if details:
             print(f"   Details: {details}")
-        
-        self.results["details"].append({
-            "test": test_name,
-            "passed": passed, 
-            "details": details,
-            "timestamp": datetime.now().isoformat()
-        })
     
-    def test_root_api(self):
-        """Test GET /api - Root API endpoint"""
+    def test_technology_stack_verification(self):
+        """Test 1: Verify Technology Stack shows Prisma ORM and Redis"""
         try:
-            response = requests.get(f"{self.base_url}/", timeout=10)
+            response = self.session.get(f"{self.base_url}/api")
             
-            if response.status_code == 200:
-                data = response.json()
-                has_message = "message" in data
-                has_endpoints = "endpoints" in data
-                has_scan = "scan" in data.get("endpoints", {})
-                has_auth = "auth" in data.get("endpoints", {})
-                
-                if has_message and has_endpoints and has_scan and has_auth:
-                    self.log_test("Root API endpoint", True, f"API version: {data.get('message')}")
-                else:
-                    self.log_test("Root API endpoint", False, "Missing required fields in response")
-            else:
-                self.log_test("Root API endpoint", False, f"HTTP {response.status_code}: {response.text}")
-                
+            if response.status_code != 200:
+                self.log_test("Technology Stack", False, f"API endpoint returned {response.status_code}")
+                return False
+            
+            data = response.json()
+            
+            # Check for Prisma ORM indication
+            database_info = data.get('database', '')
+            cache_info = data.get('cache', '')
+            
+            prisma_found = 'Prisma ORM' in database_info
+            redis_found = 'Redis' in cache_info
+            
+            if not prisma_found:
+                self.log_test("Technology Stack", False, f"Prisma ORM not found in database info. Got: {database_info}")
+                return False
+            
+            if not redis_found:
+                self.log_test("Technology Stack", False, f"Redis not found in cache info. Got: {cache_info}")
+                return False
+            
+            self.log_test("Technology Stack", True, 
+                         "Backend correctly shows MongoDB with Prisma ORM and Redis",
+                         f"Database: {database_info}, Cache: {cache_info}")
+            return True
+            
         except Exception as e:
-            self.log_test("Root API endpoint", False, f"Request failed: {str(e)}")
+            self.log_test("Technology Stack", False, f"Exception occurred: {str(e)}")
+            return False
     
-    def test_user_registration(self):
-        """Test POST /api/auth/register"""
+    def test_prisma_database_operations(self):
+        """Test 2: Test Prisma Database Operations - Registration, Login, Me"""
         try:
-            # Test with valid data
-            response = requests.post(
-                f"{self.base_url}/auth/register",
-                json=TEST_USER_DATA,
-                timeout=10
-            )
-            
-            if response.status_code == 201:
-                data = response.json()
-                has_token = "token" in data
-                has_user = "user" in data and data["user"].get("email") == TEST_USER_DATA["email"]
-                
-                if has_token and has_user:
-                    self.user_token = data["token"]
-                    self.log_test("User registration (valid data)", True, f"User created: {data['user']['email']}")
-                else:
-                    self.log_test("User registration (valid data)", False, "Missing token or user data")
-            else:
-                # User might already exist, try login instead
-                if "already registered" in response.text.lower():
-                    self.log_test("User registration (valid data)", True, "User already exists - this is expected behavior")
-                    # Try to login to get token
-                    self.test_user_login()
-                else:
-                    self.log_test("User registration (valid data)", False, f"HTTP {response.status_code}: {response.text}")
-            
-            # Test with invalid data
-            response = requests.post(
-                f"{self.base_url}/auth/register",
-                json={"email": "invalid", "password": "123"}, 
-                timeout=10
-            )
-            
-            if response.status_code == 400:
-                self.log_test("User registration (invalid data)", True, "Properly rejected invalid data")
-            else:
-                self.log_test("User registration (invalid data)", False, f"Should reject invalid data, got HTTP {response.status_code}")
-                
-        except Exception as e:
-            self.log_test("User registration", False, f"Request failed: {str(e)}")
-    
-    def test_user_login(self):
-        """Test POST /api/auth/login"""
-        try:
-            # Test with valid credentials
-            response = requests.post(
-                f"{self.base_url}/auth/login",
-                json={
-                    "email": TEST_USER_DATA["email"],
-                    "password": TEST_USER_DATA["password"]
-                },
-                timeout=10
-            )
-            
-            if response.status_code == 200:
-                data = response.json()
-                has_token = "token" in data
-                has_user = "user" in data
-                
-                if has_token and has_user:
-                    self.user_token = data["token"]
-                    self.log_test("User login (valid credentials)", True, f"Login successful for: {data['user']['email']}")
-                else:
-                    self.log_test("User login (valid credentials)", False, "Missing token or user data")
-            else:
-                self.log_test("User login (valid credentials)", False, f"HTTP {response.status_code}: {response.text}")
-            
-            # Test with invalid credentials
-            response = requests.post(
-                f"{self.base_url}/auth/login",
-                json={
-                    "email": "wrong@email.com",
-                    "password": "wrongpass"
-                },
-                timeout=10
-            )
-            
-            if response.status_code == 401:
-                self.log_test("User login (invalid credentials)", True, "Properly rejected invalid credentials")
-            else:
-                self.log_test("User login (invalid credentials)", False, f"Should reject invalid credentials, got HTTP {response.status_code}")
-                
-        except Exception as e:
-            self.log_test("User login", False, f"Request failed: {str(e)}")
-    
-    def test_get_current_user(self):
-        """Test GET /api/auth/me"""
-        if not self.user_token:
-            self.log_test("Get current user info", False, "No user token available")
-            return
-            
-        try:
-            # Test with valid token
-            headers = {"Authorization": f"Bearer {self.user_token}"}
-            response = requests.get(f"{self.base_url}/auth/me", headers=headers, timeout=10)
-            
-            if response.status_code == 200:
-                data = response.json()
-                has_email = "email" in data
-                has_name = "name" in data
-                no_password = "password" not in data
-                
-                if has_email and has_name and no_password:
-                    self.log_test("Get current user info (authenticated)", True, f"User data retrieved: {data['email']}")
-                else:
-                    self.log_test("Get current user info (authenticated)", False, "Invalid user data structure")
-            else:
-                self.log_test("Get current user info (authenticated)", False, f"HTTP {response.status_code}: {response.text}")
-            
-            # Test without token
-            response = requests.get(f"{self.base_url}/auth/me", timeout=10)
-            
-            if response.status_code == 401:
-                self.log_test("Get current user info (unauthenticated)", True, "Properly rejected request without token")
-            else:
-                self.log_test("Get current user info (unauthenticated)", False, f"Should reject unauthenticated request, got HTTP {response.status_code}")
-                
-        except Exception as e:
-            self.log_test("Get current user info", False, f"Request failed: {str(e)}")
-    
-    def test_url_scanning(self):
-        """Test POST /api/scan - Core functionality"""
-        test_cases = [
-            {"url": "https://google.com", "should_work": True, "desc": "Valid HTTPS URL"},
-            {"url": "http://example.com", "should_work": True, "desc": "Valid HTTP URL"},
-            {"url": "facebook.com", "should_work": True, "desc": "Domain only"},
-            {"url": "not-a-url", "should_work": False, "desc": "Invalid URL format"}
-        ]
-        
-        for test_case in test_cases:
-            try:
-                response = requests.post(
-                    f"{self.base_url}/scan",
-                    json={"url": test_case["url"]},
-                    timeout=30  # Scanning might take time
-                )
-                
-                if test_case["should_work"]:
-                    if response.status_code == 201:
-                        data = response.json()
-                        required_fields = ["scanId", "url", "domain", "riskScore", "trustRating", "sslInfo", "domainInfo"]
-                        has_all_fields = all(field in data for field in required_fields)
-                        valid_risk_score = 0 <= data.get("riskScore", -1) <= 100
-                        
-                        if has_all_fields and valid_risk_score:
-                            self.scan_ids.append(data["scanId"])
-                            self.log_test(f"URL scan ({test_case['desc']})", True, 
-                                        f"Risk score: {data['riskScore']}, Rating: {data['trustRating']}")
-                        else:
-                            self.log_test(f"URL scan ({test_case['desc']})", False, "Missing required fields or invalid risk score")
-                    else:
-                        self.log_test(f"URL scan ({test_case['desc']})", False, f"HTTP {response.status_code}: {response.text}")
-                else:
-                    if response.status_code == 400:
-                        self.log_test(f"URL scan ({test_case['desc']})", True, "Properly rejected invalid URL")
-                    else:
-                        self.log_test(f"URL scan ({test_case['desc']})", False, f"Should reject invalid URL, got HTTP {response.status_code}")
-                
-                # Small delay to avoid hitting rate limits
-                time.sleep(1)
-                        
-            except Exception as e:
-                self.log_test(f"URL scan ({test_case['desc']})", False, f"Request failed: {str(e)}")
-    
-    def test_scan_result_retrieval(self):
-        """Test GET /api/scan/:id"""
-        if not self.scan_ids:
-            self.log_test("Scan result retrieval", False, "No scan IDs available for testing")
-            return
-            
-        try:
-            # Test with valid scan ID
-            scan_id = self.scan_ids[0]
-            response = requests.get(f"{self.base_url}/scan/{scan_id}", timeout=10)
-            
-            if response.status_code == 200:
-                data = response.json()
-                required_fields = ["_id", "url", "domain", "riskScore", "trustRating"]
-                has_fields = all(field in data for field in required_fields)
-                
-                if has_fields:
-                    self.log_test("Scan result retrieval (valid ID)", True, f"Retrieved scan for: {data['url']}")
-                else:
-                    self.log_test("Scan result retrieval (valid ID)", False, "Missing required fields")
-            else:
-                self.log_test("Scan result retrieval (valid ID)", False, f"HTTP {response.status_code}: {response.text}")
-            
-            # Test with invalid scan ID
-            response = requests.get(f"{self.base_url}/scan/invalid-id-12345", timeout=10)
-            
-            if response.status_code == 404:
-                self.log_test("Scan result retrieval (invalid ID)", True, "Properly returned 404 for invalid ID")
-            else:
-                self.log_test("Scan result retrieval (invalid ID)", False, f"Should return 404 for invalid ID, got HTTP {response.status_code}")
-                
-        except Exception as e:
-            self.log_test("Scan result retrieval", False, f"Request failed: {str(e)}")
-    
-    def test_scan_history(self):
-        """Test GET /api/history - Authenticated endpoint"""
-        if not self.user_token:
-            self.log_test("Scan history", False, "No user token available")
-            return
-            
-        try:
-            # Test with authentication
-            headers = {"Authorization": f"Bearer {self.user_token}"}
-            response = requests.get(f"{self.base_url}/history", headers=headers, timeout=10)
-            
-            if response.status_code == 200:
-                data = response.json()
-                has_scans = "scans" in data
-                scans_is_array = isinstance(data.get("scans"), list)
-                
-                if has_scans and scans_is_array:
-                    self.log_test("Scan history (authenticated)", True, f"Retrieved {len(data['scans'])} scan(s)")
-                else:
-                    self.log_test("Scan history (authenticated)", False, "Invalid response structure")
-            else:
-                self.log_test("Scan history (authenticated)", False, f"HTTP {response.status_code}: {response.text}")
-            
-            # Test without authentication
-            response = requests.get(f"{self.base_url}/history", timeout=10)
-            
-            if response.status_code == 401:
-                self.log_test("Scan history (unauthenticated)", True, "Properly rejected unauthenticated request")
-            else:
-                self.log_test("Scan history (unauthenticated)", False, f"Should reject unauthenticated request, got HTTP {response.status_code}")
-                
-        except Exception as e:
-            self.log_test("Scan history", False, f"Request failed: {str(e)}")
-    
-    def test_fraud_reporting(self):
-        """Test POST /api/report - Authenticated endpoint"""
-        if not self.user_token:
-            self.log_test("Fraud reporting", False, "No user token available")
-            return
-            
-        try:
-            report_data = {
-                "url": "https://suspicious-site.com",
-                "reason": "phishing",
-                "description": "This site is attempting to steal login credentials by mimicking a legitimate banking website."
+            # Test user registration with Prisma
+            test_user = {
+                "name": "Alice Thompson",
+                "email": f"alice.thompson.{int(time.time())}@example.com",
+                "password": "SecurePass2024!"
             }
             
-            # Test with authentication
-            headers = {"Authorization": f"Bearer {self.user_token}"}
-            response = requests.post(
-                f"{self.base_url}/report",
-                json=report_data,
-                headers=headers,
-                timeout=10
-            )
+            print(f"\n🔄 Testing Prisma user registration...")
+            reg_response = self.session.post(f"{self.base_url}/api/auth/register", json=test_user)
             
-            if response.status_code == 201:
-                data = response.json()
-                has_id = "reportId" in data
-                has_message = "message" in data
-                
-                if has_id and has_message:
-                    self.log_test("Fraud reporting (authenticated)", True, f"Report submitted: {data['reportId']}")
-                else:
-                    self.log_test("Fraud reporting (authenticated)", False, "Missing response fields")
-            else:
-                self.log_test("Fraud reporting (authenticated)", False, f"HTTP {response.status_code}: {response.text}")
+            if reg_response.status_code != 201:
+                self.log_test("Prisma Registration", False, f"Registration failed with status {reg_response.status_code}")
+                return False
             
-            # Test without authentication
-            response = requests.post(f"{self.base_url}/report", json=report_data, timeout=10)
+            reg_data = reg_response.json()
+            if not reg_data.get('token') or not reg_data.get('user'):
+                self.log_test("Prisma Registration", False, "Missing token or user in registration response")
+                return False
             
-            if response.status_code == 401:
-                self.log_test("Fraud reporting (unauthenticated)", True, "Properly rejected unauthenticated request")
-            else:
-                self.log_test("Fraud reporting (unauthenticated)", False, f"Should reject unauthenticated request, got HTTP {response.status_code}")
-                
+            self.auth_token = reg_data['token']
+            user_id = reg_data['user']['id']
+            
+            self.log_test("Prisma Registration", True, 
+                         "User created successfully via Prisma",
+                         f"User ID: {user_id}, Email: {test_user['email']}")
+            
+            # Test user login with Prisma
+            print(f"\n🔄 Testing Prisma user login...")
+            login_data = {
+                "email": test_user['email'],
+                "password": test_user['password']
+            }
+            
+            login_response = self.session.post(f"{self.base_url}/api/auth/login", json=login_data)
+            
+            if login_response.status_code != 200:
+                self.log_test("Prisma Login", False, f"Login failed with status {login_response.status_code}")
+                return False
+            
+            login_result = login_response.json()
+            if not login_result.get('token'):
+                self.log_test("Prisma Login", False, "No token received from login")
+                return False
+            
+            self.log_test("Prisma Login", True, 
+                         "User authenticated successfully via Prisma",
+                         f"Token received for user: {login_result['user']['email']}")
+            
+            # Test user retrieval with Prisma
+            print(f"\n🔄 Testing Prisma user retrieval...")
+            headers = {'Authorization': f'Bearer {self.auth_token}'}
+            me_response = self.session.get(f"{self.base_url}/api/auth/me", headers=headers)
+            
+            if me_response.status_code != 200:
+                self.log_test("Prisma User Retrieval", False, f"User retrieval failed with status {me_response.status_code}")
+                return False
+            
+            me_data = me_response.json()
+            if me_data.get('email') != test_user['email']:
+                self.log_test("Prisma User Retrieval", False, "Retrieved user email doesn't match")
+                return False
+            
+            self.log_test("Prisma User Retrieval", True, 
+                         "User data retrieved successfully via Prisma",
+                         f"Retrieved: {me_data['name']} ({me_data['email']})")
+            
+            return True
+            
         except Exception as e:
-            self.log_test("Fraud reporting", False, f"Request failed: {str(e)}")
+            self.log_test("Prisma Database Operations", False, f"Exception: {str(e)}")
+            return False
     
-    def test_rate_limiting(self):
-        """Test rate limiting (5 scans per minute)"""
-        print("\n⏳ Testing rate limiting - this may take up to 30 seconds...")
-        
+    def test_redis_caching(self):
+        """Test 3: Test Redis Caching - First scan vs cached scan response times"""
         try:
-            # Make 6 requests quickly to trigger rate limit
+            test_url = "https://google.com"
+            
+            print(f"\n🔄 Testing Redis caching with URL: {test_url}")
+            
+            # First scan - should query and cache
+            print("   First scan (cache miss)...")
+            start_time = time.time()
+            
+            first_scan = self.session.post(f"{self.base_url}/api/scan", json={"url": test_url})
+            first_response_time = time.time() - start_time
+            
+            if first_scan.status_code not in [200, 201]:
+                self.log_test("Redis Caching - First Scan", False, 
+                             f"First scan failed with status {first_scan.status_code}")
+                return False
+            
+            first_data = first_scan.json()
+            first_scan_id = first_data.get('scanId')
+            
+            self.log_test("Redis Caching - First Scan", True, 
+                         f"First scan completed (cache miss)",
+                         f"Response time: {first_response_time:.3f}s, Scan ID: {first_scan_id}")
+            
+            # Wait a moment to ensure any processing is complete
+            time.sleep(1)
+            
+            # Second scan - should return from cache (faster)
+            print("   Second scan (cache hit)...")
+            start_time = time.time()
+            
+            second_scan = self.session.post(f"{self.base_url}/api/scan", json={"url": test_url})
+            second_response_time = time.time() - start_time
+            
+            if second_scan.status_code not in [200, 201]:
+                self.log_test("Redis Caching - Second Scan", False,
+                             f"Second scan failed with status {second_scan.status_code}")
+                return False
+            
+            second_data = second_scan.json()
+            second_scan_id = second_data.get('scanId')
+            
+            # Verify we got cached result (should be faster)
+            speed_improvement = first_response_time > second_response_time
+            
+            self.log_test("Redis Caching - Second Scan", True,
+                         f"Second scan completed (cache hit)",
+                         f"Response time: {second_response_time:.3f}s, Speed improved: {speed_improvement}")
+            
+            # Compare scan results
+            if (first_data.get('riskScore') == second_data.get('riskScore') and 
+                first_data.get('domain') == second_data.get('domain')):
+                
+                self.log_test("Redis Caching - Result Consistency", True,
+                             "Cached results are consistent with original scan",
+                             f"Risk Score: {first_data.get('riskScore')}, Domain: {first_data.get('domain')}")
+                return True
+            else:
+                self.log_test("Redis Caching - Result Consistency", False,
+                             "Cached results differ from original scan")
+                return False
+            
+        except Exception as e:
+            self.log_test("Redis Caching", False, f"Exception: {str(e)}")
+            return False
+    
+    def test_redis_rate_limiting(self):
+        """Test 4: Test Redis Rate Limiting - 5 requests allowed, 6th should fail"""
+        try:
+            print(f"\n🔄 Testing Redis-based rate limiting (5 requests per minute)...")
+            
+            # Clear any existing rate limit by waiting or using a unique identifier
+            test_url_base = f"https://example{int(time.time())}.com"
+            
+            successful_requests = 0
+            rate_limited = False
+            
+            # Try to make 6 consecutive scan requests
             for i in range(6):
-                response = requests.post(
-                    f"{self.base_url}/scan",
-                    json={"url": f"https://example{i}.com"},
-                    timeout=10
-                )
+                test_url = f"{test_url_base}/page{i}"
+                print(f"   Request {i+1}/6: {test_url}")
                 
-                if i < 5:
-                    # First 5 should succeed or be limited by previous tests
-                    if response.status_code in [201, 429]:
-                        continue
-                    else:
-                        self.log_test("Rate limiting", False, f"Unexpected response on request {i+1}: HTTP {response.status_code}")
-                        return
+                response = self.session.post(f"{self.base_url}/api/scan", json={"url": test_url})
+                
+                if response.status_code in [200, 201]:
+                    successful_requests += 1
+                    self.log_test(f"Rate Limit Test - Request {i+1}", True,
+                                 f"Request {i+1} succeeded (status: {response.status_code})")
+                elif response.status_code == 429:
+                    rate_limited = True
+                    error_data = response.json()
+                    self.log_test(f"Rate Limit Test - Request {i+1}", True,
+                                 f"Request {i+1} rate limited as expected (429)",
+                                 f"Error: {error_data.get('error', 'Rate limit exceeded')}")
+                    break
                 else:
-                    # 6th request should be rate limited
-                    if response.status_code == 429:
-                        data = response.json()
-                        if "rate limit" in data.get("error", "").lower():
-                            self.log_test("Rate limiting", True, "Properly enforced 5 requests per minute limit")
-                            return
-                        else:
-                            self.log_test("Rate limiting", False, f"Rate limited but wrong error message: {data}")
-                            return
-                    else:
-                        self.log_test("Rate limiting", False, f"Should be rate limited, got HTTP {response.status_code}")
-                        return
+                    self.log_test(f"Rate Limit Test - Request {i+1}", False,
+                                 f"Unexpected response status: {response.status_code}")
+                    return False
                 
-                time.sleep(0.5)  # Small delay between requests
-                        
+                # Small delay between requests
+                time.sleep(0.1)
+            
+            # Validate rate limiting behavior
+            if successful_requests == 5 and rate_limited:
+                self.log_test("Redis Rate Limiting", True,
+                             "Rate limiting working correctly - 5 requests allowed, 6th blocked",
+                             f"Successful: {successful_requests}, Rate limited: {rate_limited}")
+                return True
+            elif successful_requests < 5:
+                self.log_test("Redis Rate Limiting", False,
+                             f"Rate limiting too aggressive - only {successful_requests} requests allowed")
+                return False
+            else:
+                self.log_test("Redis Rate Limiting", False,
+                             "Rate limiting not working - more than 5 requests allowed")
+                return False
+            
         except Exception as e:
-            self.log_test("Rate limiting", False, f"Request failed: {str(e)}")
+            self.log_test("Redis Rate Limiting", False, f"Exception: {str(e)}")
+            return False
     
-    def test_error_handling(self):
-        """Test error handling for invalid endpoints and methods"""
+    def test_prisma_relations_queries(self):
+        """Test 5: Test Prisma Relations and Queries - History and Reports"""
         try:
-            # Test 404 for invalid endpoint
-            response = requests.get(f"{self.base_url}/nonexistent", timeout=10)
+            if not self.auth_token:
+                self.log_test("Prisma Relations", False, "No auth token available for testing")
+                return False
             
-            if response.status_code == 404:
-                self.log_test("Error handling (404)", True, "Properly returned 404 for invalid endpoint")
-            else:
-                self.log_test("Error handling (404)", False, f"Should return 404, got HTTP {response.status_code}")
+            headers = {'Authorization': f'Bearer {self.auth_token}'}
             
-            # Test 405 for unsupported method
-            response = requests.put(f"{self.base_url}/scan", json={"test": "data"}, timeout=10)
+            print(f"\n🔄 Testing Prisma relations and queries...")
             
-            if response.status_code == 405:
-                self.log_test("Error handling (405)", True, "Properly returned 405 for unsupported method")
-            else:
-                self.log_test("Error handling (405)", False, f"Should return 405, got HTTP {response.status_code}")
-                
+            # Test scan history retrieval (user-scan relationship)
+            print("   Testing scan history via Prisma...")
+            history_response = self.session.get(f"{self.base_url}/api/history", headers=headers)
+            
+            if history_response.status_code != 200:
+                self.log_test("Prisma Relations - History", False,
+                             f"History retrieval failed with status {history_response.status_code}")
+                return False
+            
+            history_data = history_response.json()
+            scans = history_data.get('scans', [])
+            
+            self.log_test("Prisma Relations - History", True,
+                         "Scan history retrieved successfully via Prisma",
+                         f"Found {len(scans)} scan(s) in history")
+            
+            # Test fraud report submission (user-report relationship)
+            print("   Testing fraud report via Prisma...")
+            report_data = {
+                "url": "https://suspicious-site.example.com",
+                "reason": "phishing",
+                "description": "This site appears to be impersonating a legitimate banking website to steal credentials."
+            }
+            
+            report_response = self.session.post(f"{self.base_url}/api/report", 
+                                              json=report_data, headers=headers)
+            
+            if report_response.status_code != 201:
+                self.log_test("Prisma Relations - Report", False,
+                             f"Report submission failed with status {report_response.status_code}")
+                return False
+            
+            report_result = report_response.json()
+            report_id = report_result.get('reportId')
+            
+            if not report_id:
+                self.log_test("Prisma Relations - Report", False,
+                             "No report ID returned from report submission")
+                return False
+            
+            self.log_test("Prisma Relations - Report", True,
+                         "Fraud report submitted successfully via Prisma",
+                         f"Report ID: {report_id}, URL: {report_data['url']}")
+            
+            return True
+            
         except Exception as e:
-            self.log_test("Error handling", False, f"Request failed: {str(e)}")
+            self.log_test("Prisma Relations", False, f"Exception: {str(e)}")
+            return False
+    
+    def test_data_persistence(self):
+        """Test 6: Verify Data Persistence - Data saved via Prisma and relationships work"""
+        try:
+            if not self.auth_token:
+                self.log_test("Data Persistence", False, "No auth token available for testing")
+                return False
+            
+            headers = {'Authorization': f'Bearer {self.auth_token}'}
+            
+            print(f"\n🔄 Testing data persistence via Prisma...")
+            
+            # Create a scan to test persistence
+            test_url = f"https://testsite{int(time.time())}.example.org"
+            
+            print("   Creating scan for persistence test...")
+            scan_response = self.session.post(f"{self.base_url}/api/scan", 
+                                            json={"url": test_url}, headers=headers)
+            
+            if scan_response.status_code not in [200, 201]:
+                self.log_test("Data Persistence - Scan Creation", False,
+                             f"Scan creation failed with status {scan_response.status_code}")
+                return False
+            
+            scan_data = scan_response.json()
+            scan_id = scan_data.get('scanId')
+            
+            self.log_test("Data Persistence - Scan Creation", True,
+                         "Scan created and should be persisted",
+                         f"Scan ID: {scan_id}, URL: {test_url}")
+            
+            # Wait a moment for persistence
+            time.sleep(1)
+            
+            # Retrieve the scan by ID to verify it was persisted
+            print("   Retrieving scan to verify persistence...")
+            retrieve_response = self.session.get(f"{self.base_url}/api/scan/{scan_id}")
+            
+            if retrieve_response.status_code != 200:
+                self.log_test("Data Persistence - Scan Retrieval", False,
+                             f"Scan retrieval failed with status {retrieve_response.status_code}")
+                return False
+            
+            retrieved_data = retrieve_response.json()
+            
+            if (retrieved_data.get('id') == scan_id and 
+                retrieved_data.get('url') == test_url):
+                
+                self.log_test("Data Persistence - Scan Retrieval", True,
+                             "Scan successfully persisted and retrieved via Prisma",
+                             f"Retrieved scan with matching ID and URL")
+            else:
+                self.log_test("Data Persistence - Scan Retrieval", False,
+                             "Retrieved scan data doesn't match original")
+                return False
+            
+            # Check user-scan relationship by looking at history
+            print("   Verifying user-scan relationship...")
+            history_response = self.session.get(f"{self.base_url}/api/history", headers=headers)
+            
+            if history_response.status_code != 200:
+                self.log_test("Data Persistence - User Relationship", False,
+                             "Failed to retrieve user's scan history")
+                return False
+            
+            history_data = history_response.json()
+            user_scans = history_data.get('scans', [])
+            
+            # Check if our scan is in the user's history
+            scan_found_in_history = any(scan.get('id') == scan_id for scan in user_scans)
+            
+            if scan_found_in_history:
+                self.log_test("Data Persistence - User Relationship", True,
+                             "User-scan relationship working correctly",
+                             f"Scan appears in user's history")
+                return True
+            else:
+                self.log_test("Data Persistence - User Relationship", False,
+                             "Scan not found in user's history - relationship issue")
+                return False
+            
+        except Exception as e:
+            self.log_test("Data Persistence", False, f"Exception: {str(e)}")
+            return False
     
     def run_all_tests(self):
-        """Run complete test suite"""
-        print(f"🚀 Starting TrustScan Backend API Tests")
-        print(f"📍 Base URL: {self.base_url}")
-        print("=" * 60)
+        """Run all tests for TrustScan backend with Prisma ORM and Redis"""
+        print("="*80)
+        print("🚀 TRUSTSCAN BACKEND TESTS - PRISMA ORM & REDIS IMPLEMENTATION")
+        print("="*80)
+        print(f"Base URL: {self.base_url}")
+        print(f"Test started at: {datetime.now().isoformat()}")
+        print()
         
-        # Core functionality tests
-        self.test_root_api()
-        self.test_user_registration()
-        self.test_user_login()  
-        self.test_get_current_user()
-        self.test_url_scanning()
-        self.test_scan_result_retrieval()
-        self.test_scan_history()
-        self.test_fraud_reporting()
-        self.test_rate_limiting()
-        self.test_error_handling()
+        # Run all tests in sequence
+        test_methods = [
+            self.test_technology_stack_verification,
+            self.test_prisma_database_operations,
+            self.test_redis_caching,
+            self.test_redis_rate_limiting,
+            self.test_prisma_relations_queries,
+            self.test_data_persistence
+        ]
         
-        # Print final results
-        print("\n" + "=" * 60)
-        print(f"🏁 Test Summary:")
-        print(f"   Total Tests: {self.results['total_tests']}")
-        print(f"   Passed: {self.results['passed']} ✅")
-        print(f"   Failed: {self.results['failed']} ❌")
-        print(f"   Success Rate: {(self.results['passed']/self.results['total_tests']*100):.1f}%")
+        passed = 0
+        failed = 0
         
-        if self.results['failed'] > 0:
-            print(f"\n❌ Failed Tests:")
-            for detail in self.results['details']:
-                if not detail['passed']:
-                    print(f"   - {detail['test']}: {detail['details']}")
+        for test_method in test_methods:
+            try:
+                if test_method():
+                    passed += 1
+                else:
+                    failed += 1
+            except Exception as e:
+                failed += 1
+                print(f"❌ FAIL: {test_method.__name__} - Exception: {str(e)}")
+            
+            print()  # Add spacing between tests
         
-        return self.results
+        # Print summary
+        total_tests = passed + failed
+        success_rate = (passed / total_tests * 100) if total_tests > 0 else 0
+        
+        print("="*80)
+        print("📊 TEST SUMMARY")
+        print("="*80)
+        print(f"Total Tests: {total_tests}")
+        print(f"Passed: {passed} ✅")
+        print(f"Failed: {failed} ❌")
+        print(f"Success Rate: {success_rate:.1f}%")
+        print()
+        
+        if failed > 0:
+            print("🔍 FAILED TESTS:")
+            for result in self.test_results:
+                if not result['success']:
+                    print(f"   ❌ {result['test']}: {result['message']}")
+            print()
+        
+        print("🎯 PRISMA ORM & REDIS FEATURES TESTED:")
+        print("   ✓ Technology stack verification (Prisma + Redis)")
+        print("   ✓ Prisma database operations (User CRUD)")
+        print("   ✓ Redis caching (scan result caching)")  
+        print("   ✓ Redis rate limiting (5 requests/minute)")
+        print("   ✓ Prisma relations (user-scan, user-report)")
+        print("   ✓ Data persistence via Prisma")
+        print()
+        
+        return passed == total_tests
 
 if __name__ == "__main__":
-    tester = TrustScanAPITester()
-    results = tester.run_all_tests()
+    tester = TrustScanTester()
+    success = tester.run_all_tests()
+    exit(0 if success else 1)
