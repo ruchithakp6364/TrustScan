@@ -1,10 +1,9 @@
 import { NextResponse } from 'next/server';
-import { getDatabase } from '@/lib/db';
+import prisma from '@/lib/prisma';
 import { hashPassword, comparePassword, generateToken, getUserFromRequest } from '@/lib/auth';
 import { scanWebsite } from '@/lib/scanner';
 import { urlSchema, registerSchema, loginSchema, reportSchema } from '@/lib/validators';
 import { checkRateLimit } from '@/lib/rateLimit';
-import { v4 as uuidv4 } from 'uuid';
 
 // Helper to get client IP
 function getClientIP(request) {
@@ -33,6 +32,8 @@ export async function GET(request) {
       return successResponse({ 
         message: 'TrustScan API v1.0',
         status: 'operational',
+        database: 'MongoDB with Prisma ORM',
+        cache: 'Redis',
         endpoints: {
           scan: 'POST /api/scan',
           result: 'GET /api/scan/:id',
@@ -54,14 +55,20 @@ export async function GET(request) {
     // Get scan result by ID
     if (pathname.match(/^\/api\/scan\/[^/]+$/)) {
       const id = pathname.split('/').pop();
-      const db = await getDatabase();
-      const scan = await db.collection('scans').findOne({ _id: id });
       
-      if (!scan) {
+      try {
+        const scan = await prisma.scan.findUnique({
+          where: { id }
+        });
+        
+        if (!scan) {
+          return errorResponse('Scan not found', 404);
+        }
+        
+        return successResponse(scan);
+      } catch (error) {
         return errorResponse('Scan not found', 404);
       }
-      
-      return successResponse(scan);
     }
 
     // Get current user info
@@ -71,11 +78,16 @@ export async function GET(request) {
         return errorResponse('Unauthorized', 401);
       }
       
-      const db = await getDatabase();
-      const userData = await db.collection('users').findOne(
-        { _id: user.userId },
-        { projection: { password: 0 } }
-      );
+      const userData = await prisma.user.findUnique({
+        where: { id: user.userId },
+        select: {
+          id: true,
+          email: true,
+          name: true,
+          role: true,
+          createdAt: true
+        }
+      });
       
       if (!userData) {
         return errorResponse('User not found', 404);
@@ -91,12 +103,11 @@ export async function GET(request) {
         return errorResponse('Unauthorized', 401);
       }
       
-      const db = await getDatabase();
-      const scans = await db.collection('scans')
-        .find({ userId: user.userId })
-        .sort({ createdAt: -1 })
-        .limit(50)
-        .toArray();
+      const scans = await prisma.scan.findMany({
+        where: { userId: user.userId },
+        orderBy: { createdAt: 'desc' },
+        take: 50
+      });
       
       return successResponse({ scans });
     }
@@ -108,20 +119,24 @@ export async function GET(request) {
         return errorResponse('Unauthorized', 403);
       }
       
-      const db = await getDatabase();
-      const [totalScans, totalUsers, totalReports, recentScans] = await Promise.all([
-        db.collection('scans').countDocuments(),
-        db.collection('users').countDocuments(),
-        db.collection('reports').countDocuments(),
-        db.collection('scans').find().sort({ createdAt: -1 }).limit(10).toArray()
+      const [totalScans, totalUsers, totalReports, recentScans, allScans] = await Promise.all([
+        prisma.scan.count(),
+        prisma.user.count(),
+        prisma.report.count(),
+        prisma.scan.findMany({
+          orderBy: { createdAt: 'desc' },
+          take: 10
+        }),
+        prisma.scan.findMany({
+          select: { riskScore: true }
+        })
       ]);
 
       // Calculate risk distribution
-      const scans = await db.collection('scans').find().toArray();
       const riskDistribution = {
-        safe: scans.filter(s => s.riskScore < 40).length,
-        moderate: scans.filter(s => s.riskScore >= 40 && s.riskScore < 70).length,
-        high: scans.filter(s => s.riskScore >= 70).length
+        safe: allScans.filter(s => s.riskScore < 40).length,
+        moderate: allScans.filter(s => s.riskScore >= 40 && s.riskScore < 70).length,
+        high: allScans.filter(s => s.riskScore >= 70).length
       };
       
       return successResponse({
@@ -140,15 +155,18 @@ export async function GET(request) {
         return errorResponse('Unauthorized', 403);
       }
       
-      const db = await getDatabase();
       const url = new URL(request.url);
       const page = parseInt(url.searchParams.get('page') || '1');
       const limit = parseInt(url.searchParams.get('limit') || '20');
       const skip = (page - 1) * limit;
       
       const [scans, total] = await Promise.all([
-        db.collection('scans').find().sort({ createdAt: -1 }).skip(skip).limit(limit).toArray(),
-        db.collection('scans').countDocuments()
+        prisma.scan.findMany({
+          orderBy: { createdAt: 'desc' },
+          skip,
+          take: limit
+        }),
+        prisma.scan.count()
       ]);
       
       return successResponse({
@@ -173,7 +191,6 @@ export async function GET(request) {
 export async function POST(request) {
   try {
     const { pathname } = new URL(request.url);
-    const db = await getDatabase();
 
     // User registration
     if (pathname === '/api/auth/register') {
@@ -187,28 +204,36 @@ export async function POST(request) {
       const { email, password, name } = validation.data;
 
       // Check if user exists
-      const existingUser = await db.collection('users').findOne({ email });
+      const existingUser = await prisma.user.findUnique({
+        where: { email }
+      });
+      
       if (existingUser) {
         return errorResponse('Email already registered');
       }
 
       // Create user
-      const userId = uuidv4();
       const hashedPassword = hashPassword(password);
-      await db.collection('users').insertOne({
-        _id: userId,
-        email,
-        password: hashedPassword,
-        name,
-        role: 'user',
-        createdAt: new Date()
+      const user = await prisma.user.create({
+        data: {
+          email,
+          password: hashedPassword,
+          name,
+          role: 'user'
+        },
+        select: {
+          id: true,
+          email: true,
+          name: true,
+          role: true
+        }
       });
 
-      const token = generateToken({ userId, email, role: 'user' });
+      const token = generateToken({ userId: user.id, email: user.email, role: user.role });
 
       return successResponse({
         token,
-        user: { _id: userId, email, name, role: 'user' }
+        user
       }, 201);
     }
 
@@ -224,7 +249,10 @@ export async function POST(request) {
       const { email, password } = validation.data;
 
       // Find user
-      const user = await db.collection('users').findOne({ email });
+      const user = await prisma.user.findUnique({
+        where: { email }
+      });
+      
       if (!user) {
         return errorResponse('Invalid credentials', 401);
       }
@@ -236,7 +264,7 @@ export async function POST(request) {
       }
 
       const token = generateToken({ 
-        userId: user._id, 
+        userId: user.id, 
         email: user.email, 
         role: user.role 
       });
@@ -244,7 +272,7 @@ export async function POST(request) {
       return successResponse({
         token,
         user: { 
-          _id: user._id, 
+          id: user.id, 
           email: user.email, 
           name: user.name, 
           role: user.role 
@@ -257,7 +285,7 @@ export async function POST(request) {
       const clientIP = getClientIP(request);
       
       // Check rate limit
-      const rateLimit = checkRateLimit(clientIP);
+      const rateLimit = await checkRateLimit(clientIP);
       if (!rateLimit.allowed) {
         return errorResponse(
           `Rate limit exceeded. Try again at ${rateLimit.resetAt.toISOString()}`,
@@ -280,27 +308,26 @@ export async function POST(request) {
       // Get user if authenticated
       const user = getUserFromRequest(request);
       
-      // Save scan to database
-      const scanId = uuidv4();
-      await db.collection('scans').insertOne({
-        _id: scanId,
-        userId: user?.userId || null,
-        url: scanResult.url,
-        domain: scanResult.domain,
-        riskScore: scanResult.riskScore,
-        trustRating: scanResult.trustRating,
-        details: {
-          sslInfo: scanResult.sslInfo,
-          domainInfo: scanResult.domainInfo,
-          blacklistStatus: scanResult.blacklistStatus,
-          suspiciousContent: scanResult.suspiciousContent,
-          ipInfo: scanResult.ipInfo
-        },
-        createdAt: new Date()
+      // Save scan to database using Prisma
+      const scan = await prisma.scan.create({
+        data: {
+          userId: user?.userId || null,
+          url: scanResult.url,
+          domain: scanResult.domain,
+          riskScore: scanResult.riskScore,
+          trustRating: scanResult.trustRating,
+          details: {
+            sslInfo: scanResult.sslInfo,
+            domainInfo: scanResult.domainInfo,
+            blacklistStatus: scanResult.blacklistStatus,
+            suspiciousContent: scanResult.suspiciousContent,
+            ipInfo: scanResult.ipInfo
+          }
+        }
       });
 
       return successResponse({
-        scanId,
+        scanId: scan.id,
         ...scanResult
       }, 201);
     }
@@ -321,19 +348,18 @@ export async function POST(request) {
 
       const { url, reason, description } = validation.data;
 
-      const reportId = uuidv4();
-      await db.collection('reports').insertOne({
-        _id: reportId,
-        userId: user.userId,
-        url,
-        reason,
-        description,
-        status: 'pending',
-        createdAt: new Date()
+      const report = await prisma.report.create({
+        data: {
+          userId: user.userId,
+          url,
+          reason,
+          description,
+          status: 'pending'
+        }
       });
 
       return successResponse({
-        reportId,
+        reportId: report.id,
         message: 'Report submitted successfully'
       }, 201);
     }
